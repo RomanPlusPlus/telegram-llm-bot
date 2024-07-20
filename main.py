@@ -1,5 +1,5 @@
 import os
-from ai_providers.open_ai_wrapper import ask_gpt_multi_message, ask_gpt_single_message
+from ai_providers.rate_limited_ai_wrapper import ask_gpt_multi_message
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,

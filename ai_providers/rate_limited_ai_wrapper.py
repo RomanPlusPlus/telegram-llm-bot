@@ -1,38 +1,20 @@
 import os
-from openai import OpenAI  # pip install openai
 import time
 from functools import wraps
 from collections import deque
 
-#key = os.environ["OPENAI_API_KEY"]
-#client = OpenAI(api_key=key)
+from ai_providers.anthropic_ai_provider import ask_anthropic
+from ai_providers.open_ai_provider import ask_open_ai
 
 MAX_CALLS_PER_PERIOD = 10000
-PERIOD_S = 60 # 1 min
+PERIOD_S = 60  # 1 min
 
-
-def build_client():
-    key = os.environ["OPENAI_API_KEY"]
-    client = OpenAI(api_key=key)
-    return client
-
-
-def build_model_handle():
-    handle = os.environ["OPENAI_MODEL"]  # e.g. "gpt-4o"
-    return handle
-
-
-MODEL = build_model_handle()
-CLIENT = build_client()
-
-print(f"Using OpenAI model: {MODEL}")
-print(f"Using OpenAI client: {CLIENT}")
-
-
+PROVIDER = os.environ["AI_PROVIDER"]
 
 
 class RateLimitExceededError(Exception):
     pass
+
 
 def rate_limit(max_calls, period, stop_on_limit=True):
     calls = deque()
@@ -64,43 +46,31 @@ def rate_limit(max_calls, period, stop_on_limit=True):
         return wrapper
     return decorator
 
+
 @rate_limit(max_calls=MAX_CALLS_PER_PERIOD, period=PERIOD_S, stop_on_limit=True)
 def ask_gpt_multi_message(messages, max_length):
     try:
-        completion = CLIENT.chat.completions.create(
-            model=MODEL, messages=messages, max_tokens=max_length,
-        )
-        answer = completion.choices[0].message.content
-        print(f"OpenAI response: {answer}")
+        # completion = CLIENT.chat.completions.create(
+        #    model=MODEL, messages=messages, max_tokens=max_length,
+        # )
+        # answer = completion.choices[0].message.content
+
+        if PROVIDER == "openai":
+            answer = ask_open_ai(messages, max_length)
+        elif PROVIDER == "anthropic":
+            answer = ask_anthropic(messages, max_length)
+        else:
+            answer = f"unknown AI provider: {PROVIDER}"
+
+        print(f"AI response: {answer}")
     except Exception as e:
-        msg = f"Error while sending to OpenAI: {e}"
+        msg = f"Error while sending to AI provider: {e}"
         print(msg)
         answer = msg
     return answer
 
 
 """
-def ask_gpt_multi_message(messages, max_length):
-
-    try:
-
-        completion = CLIENT.chat.completions.create(
-            model=MODEL, messages=messages, max_tokens=max_length,
-        )
-
-        answer = completion.choices[0].message.content
-
-        print(f"OpenAI response: {answer}")
-
-    except Exception as e:
-        msg = f"Error while sending to OpenAI: {e}"
-        print(msg)
-        answer = msg
-
-    return answer
-"""
-
-
 def ask_gpt_single_message(prompt, sys_msg, max_length):
     print("Asking GPT...")
 
@@ -125,4 +95,5 @@ def ask_gpt_single_message(prompt, sys_msg, max_length):
         res = f"Error: {e}"
 
     return res
+"""
 
