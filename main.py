@@ -1,5 +1,8 @@
 import os
-from ai_providers.rate_limited_ai_wrapper import ask_gpt_multi_message
+from ai_providers.rate_limited_ai_wrapper import (
+    PROVIDER_FROM_ENV,
+    ask_gpt_multi_message,
+)
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -24,14 +27,34 @@ Some possible alternative strategies:
 ############################################################
 
 TODO:
--implement Claude 3.5 Sonet (smarter, larger context window)
 
 photo as an input
 
 add optional logging, by user
+- token usage stats by user 
+
+
+
+add text commands.
+to them: "clear" - to delete all messages from memory
+
+update the docs with the anthropics stuff
+
+"convert this text into sound" func
+
+long mode:
+ keep all the messages, don't limit them to 50
+ but show the user each time he is in the mode, and advise to stop
+ 
 
 """
 
+PROVIDER_INDICATORS = {  # the indicators are case-insensitive
+    "openai": ["o:", "о:"],
+    "anthropic": ["a:", "а:", "c:", "с:"],
+}  # if the user message starts with any of the indicators, use the provider
+
+SELECTED_PROVIDER = None
 
 # Retrieve token from environment variable
 TOKEN = os.getenv("TELEGRAM_LLM_BOT_TOKEN")
@@ -47,7 +70,7 @@ allowed_ids_str = os.getenv("ALLOWED_USER_IDS")
 ALLOWED_USER_IDS = [int(user_id.strip()) for user_id in allowed_ids_str.split(",")]
 
 SYSTEM_MSG = """
-Du bist ein hilfreicher Assistent.
+Sie sind ein hilfreicher Assistent.
 Dies ist ein Instant-Messaging-Chat, also halten Sie Ihre Antworten kurz und präzise. Geben Sie aber eine ausführliche Antwort, wenn Sie dem Nutzer damit am besten helfen können. 
 Zum Beispiel, wenn der Benutzer eine einfache Frage gestellt hat, ist eine kurze Antwort vorzuziehen. Wenn der Benutzer jedoch eine komplizierte E-Mail schreiben möchte, schreiben Sie sie vollständig. 
 Oft ist es hilfreich, dem Benutzer Fragen zu stellen, um ihm einen maßgeschneiderten Rat zu geben oder das Thema zu vertiefen. 
@@ -92,11 +115,42 @@ async def start_game_callback(
     await start_new_game(update, context)
 
 
+def update_provider_from_user_input(user_input):
+    switch7 = False
+    report = ""
+    for provider, indicators in PROVIDER_INDICATORS.items():
+        for indicator in indicators:
+            if user_input.lower().startswith(indicator):
+                global SELECTED_PROVIDER
+                if provider != SELECTED_PROVIDER:
+                    switch7 = True
+                    if SELECTED_PROVIDER is None:
+                        SELECTED_PROVIDER = PROVIDER_FROM_ENV
+                    report = f"{SELECTED_PROVIDER} -> {provider}"
+                    print(report)
+                SELECTED_PROVIDER = provider
+                return switch7, report
+    return switch7, report
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
 
     if user_id in ALLOWED_USER_IDS:
         user_input = update.message.text
+        user_input = user_input.strip()
+        print(f"User input: {user_input}")
+
+        # get the provider from the user input
+        switch7, report = update_provider_from_user_input(user_input)
+        if switch7:
+            await update.message.reply_text(report)
+
+        # remove the provider indicator from the start of the message, but only from the start
+        for provider, indicators in PROVIDER_INDICATORS.items():
+            for indicator in indicators:
+                if user_input.lower().startswith(indicator):
+                    user_input = user_input[len(indicator) :].strip()
 
         if user_id in MESSAGES_BY_USER:
             MESSAGES_BY_USER[user_id].append(
@@ -110,7 +164,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             ]
 
         # answer = ask_gpt_single_message(user_input, SYSTEM_MSG, max_length=500)
-        answer = ask_gpt_multi_message(MESSAGES_BY_USER[user_id], max_length=500)
+        answer = ask_gpt_multi_message(
+            MESSAGES_BY_USER[user_id],
+            max_length=500,
+            user_defined_provider=SELECTED_PROVIDER,
+        )
 
         MESSAGES_BY_USER[user_id].append(
             {"role": "assistant", "content": answer},
@@ -120,7 +178,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if len(MESSAGES_BY_USER[user_id]) > MAX_MESSAGES_NUM:
             MESSAGES_BY_USER[user_id] = MESSAGES_BY_USER[user_id][-MAX_MESSAGES_NUM:]
             # attach the system message to the beginning
-            MESSAGES_BY_USER[user_id].insert(0, {"role": "system", "content": SYSTEM_MSG})
+            MESSAGES_BY_USER[user_id].insert(
+                0, {"role": "system", "content": SYSTEM_MSG}
+            )
         print(f"Messages length: {len(MESSAGES_BY_USER[user_id])}")
 
         await update.message.reply_text(answer)

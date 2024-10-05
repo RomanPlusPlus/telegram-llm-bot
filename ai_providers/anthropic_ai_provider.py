@@ -16,8 +16,8 @@ def build_client():
 if os.environ["AI_PROVIDER"] == "anthropic":
     MODEL = build_model_handle()
     CLIENT = build_client()
-    print(f"Using Anthropic model: {MODEL}")
-    print(f"Using Anthropic client: {CLIENT}")
+    print(f"Loaded Anthropic model: {MODEL}")
+    print(f"Loaded Anthropic client: {CLIENT}")
 else:
     MODEL = None
     CLIENT = None

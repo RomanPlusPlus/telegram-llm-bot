@@ -9,7 +9,7 @@ from ai_providers.open_ai_provider import ask_open_ai
 MAX_CALLS_PER_PERIOD = 10000
 PERIOD_S = 60  # 1 min
 
-PROVIDER = os.environ["AI_PROVIDER"]
+PROVIDER_FROM_ENV = os.environ["AI_PROVIDER"]
 
 
 class RateLimitExceededError(Exception):
@@ -48,19 +48,21 @@ def rate_limit(max_calls, period, stop_on_limit=True):
 
 
 @rate_limit(max_calls=MAX_CALLS_PER_PERIOD, period=PERIOD_S, stop_on_limit=True)
-def ask_gpt_multi_message(messages, max_length):
+def ask_gpt_multi_message(messages, max_length, user_defined_provider=None):
     try:
-        # completion = CLIENT.chat.completions.create(
-        #    model=MODEL, messages=messages, max_tokens=max_length,
-        # )
-        # answer = completion.choices[0].message.content
 
-        if PROVIDER == "openai":
+        if user_defined_provider is None:
+            provider = PROVIDER_FROM_ENV
+        else:
+            provider = user_defined_provider
+        print(f"Using provider: {provider}")
+
+        if provider == "openai":
             answer = ask_open_ai(messages, max_length)
-        elif PROVIDER == "anthropic":
+        elif provider == "anthropic":
             answer = ask_anthropic(messages, max_length)
         else:
-            answer = f"unknown AI provider: {PROVIDER}"
+            answer = f"unknown AI provider: {PROVIDER_FROM_ENV}"
 
         print(f"AI response: {answer}")
     except Exception as e:
