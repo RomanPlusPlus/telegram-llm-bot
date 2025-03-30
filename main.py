@@ -16,7 +16,7 @@ from telegram.ext import (
 """
 Note:
 Currently, it's limiting the number of messages from the user by keeping only the last MAX_MESSAGES_NUM messages.
-It was selected as the most user-friendly optiion, even if it's costlier.
+It was selected as the most user-friendly option, even if it's costlier.
 Some possible alternative strategies:
 - maybe detect a change of topic and reset the chat
 - add the reset chat button
@@ -24,34 +24,12 @@ Some possible alternative strategies:
 --- save the ts of the latest msg
 --- if the latest msg by the user was yesterday, and more than 5h elapsed, then reset
 
-############################################################
-
-TODO:
-
-photo as an input
-
-add optional logging, by user
-- token usage stats by user 
-
-
-
-add text commands.
-to them: "clear" - to delete all messages from memory
-
-update the docs with the anthropics stuff
-
-"convert this text into sound" func
-
-long mode:
- keep all the messages, don't limit them to 50
- but show the user each time he is in the mode, and advise to stop
- 
-
 """
 
+
 PROVIDER_INDICATORS = {  # the indicators are case-insensitive
-    "openai": ["o:", "о:"],
-    "anthropic": ["a:", "а:", "c:", "с:"],
+    "openai": ["o:", "о:"],  # Russian and Latin
+    "anthropic": ["a:", "а:", "c:", "с:"],  # Russian and Latin
 }  # if the user message starts with any of the indicators, use the provider
 
 SELECTED_PROVIDER = None
