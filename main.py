@@ -3,6 +3,7 @@ from ai_providers.rate_limited_ai_wrapper import (
     PROVIDER_FROM_ENV,
     ask_gpt_multi_message,
 )
+from plugins import config_plugins
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -16,6 +17,47 @@ from PIL import Image
 import io
 from utils.images import openai_requirements_image_resize, encode_image_to_data_url
 from config import MAX_IMAGES_PER_MESSAGE
+from utils.images import openai_requirements_image_resize, encode_image_to_data_url
+from config import MAX_IMAGES_PER_MESSAGE
+import importlib.util
+import sys
+
+# Dynamic Plugin Loading
+PLUGINS = []
+PLUGINS_DIR = os.path.join(os.path.dirname(__file__), "plugins")
+
+def load_plugins():
+    global PLUGINS
+    PLUGINS = []
+    if not os.path.exists(PLUGINS_DIR):
+        print(f"Plugins directory not found: {PLUGINS_DIR}")
+        return
+
+    for plugin_name in os.listdir(PLUGINS_DIR):
+        plugin_path = os.path.join(PLUGINS_DIR, plugin_name)
+        if os.path.isdir(plugin_path):
+            # Check if plugin is enabled in config
+            if not config_plugins.is_plugin_enabled(plugin_name):
+                print(f"Plugin {plugin_name} is disabled in config.")
+                continue
+                
+            main_py = os.path.join(plugin_path, "main.py")
+            if os.path.exists(main_py):
+                try:
+                    spec = importlib.util.spec_from_file_location(f"plugins.{plugin_name}", main_py)
+                    module = importlib.util.module_from_spec(spec)
+                    sys.modules[f"plugins.{plugin_name}"] = module
+                    spec.loader.exec_module(module)
+                    
+                    if hasattr(module, "is_plugin_applicable") and hasattr(module, "process_messages"):
+                        PLUGINS.append(module)
+                        print(f"Loaded plugin: {plugin_name}")
+                    else:
+                        print(f"Plugin {plugin_name} missing required functions.")
+                except Exception as e:
+                    print(f"Error loading plugin {plugin_name}: {e}")
+
+load_plugins()
 
 """
 Note:
@@ -104,6 +146,84 @@ async def start_game_callback(
     await start_new_game(update, context)
 
 
+async def plugins_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show the status of all plugins."""
+    user_id = update.effective_user.id
+    if user_id not in ALLOWED_USER_IDS:
+        await update.message.reply_text(f"No permission. Your user_id is {user_id}.")
+        return
+    
+    status = config_plugins.get_plugin_status()
+    message = "**Plugin Status:**\n\n"
+    for plugin_name, enabled in status.items():
+        status_emoji = "✅" if enabled else "❌"
+        message += f"{status_emoji} `{plugin_name}`: {'Enabled' if enabled else 'Disabled'}\n"
+    
+    await update.message.reply_text(message, parse_mode="Markdown")
+
+
+async def enable_plugin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Enable a specific plugin."""
+    user_id = update.effective_user.id
+    if user_id not in ALLOWED_USER_IDS:
+        await update.message.reply_text(f"No permission. Your user_id is {user_id}.")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("Usage: /enable_plugin <plugin_name>")
+        return
+    
+    plugin_name = context.args[0]
+    if config_plugins.enable_plugin(plugin_name):
+        load_plugins()  # Reload plugins
+        await update.message.reply_text(f"✅ Plugin `{plugin_name}` enabled.", parse_mode="Markdown")
+    else:
+        await update.message.reply_text(f"❌ Plugin `{plugin_name}` not found.", parse_mode="Markdown")
+
+
+async def disable_plugin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Disable a specific plugin."""
+    user_id = update.effective_user.id
+    if user_id not in ALLOWED_USER_IDS:
+        await update.message.reply_text(f"No permission. Your user_id is {user_id}.")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("Usage: /disable_plugin <plugin_name>")
+        return
+    
+    plugin_name = context.args[0]
+    if config_plugins.disable_plugin(plugin_name):
+        load_plugins()  # Reload plugins
+        await update.message.reply_text(f"❌ Plugin `{plugin_name}` disabled.", parse_mode="Markdown")
+    else:
+        await update.message.reply_text(f"❌ Plugin `{plugin_name}` not found.", parse_mode="Markdown")
+
+
+async def enable_all_plugins_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Enable all plugins."""
+    user_id = update.effective_user.id
+    if user_id not in ALLOWED_USER_IDS:
+        await update.message.reply_text(f"No permission. Your user_id is {user_id}.")
+        return
+    
+    config_plugins.enable_all_plugins()
+    load_plugins()  # Reload plugins
+    await update.message.reply_text("✅ All plugins enabled.")
+
+
+async def disable_all_plugins_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Disable all plugins."""
+    user_id = update.effective_user.id
+    if user_id not in ALLOWED_USER_IDS:
+        await update.message.reply_text(f"No permission. Your user_id is {user_id}.")
+        return
+    
+    config_plugins.disable_all_plugins()
+    load_plugins()  # Reload plugins
+    await update.message.reply_text("❌ All plugins disabled.")
+
+
 def update_provider_from_user_input(user_input):
     switch7 = False
     report = ""
@@ -142,15 +262,65 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 if user_input.lower().startswith(indicator):
                     user_input = user_input[len(indicator) :].strip()
 
+        # Plugin processing
+        # Create a temporary message list to pass to plugins
+        # We need to construct it as if it was in the history, but it's just the current message for now
+        # Actually, plugins might need history? The spec says `is_plugin_applicable(messages)`.
+        # So we should pass the current history + the new message?
+        # But we haven't appended the new message to history yet.
+        # Let's construct a temporary list.
+        
+        temp_messages = []
+        if user_id in MESSAGES_BY_USER:
+            temp_messages = MESSAGES_BY_USER[user_id].copy()
+        
+        # Append current message
+        temp_messages.append({"role": "user", "content": user_input})
+        
+        plugin_processed = False
+        user_input_to_process = user_input
+        
+        for plugin in PLUGINS:
+            try:
+                # Pass the selected provider to the plugin
+                # The provider might be None if not set yet, defaulting to env
+                current_provider = SELECTED_PROVIDER if SELECTED_PROVIDER else PROVIDER_FROM_ENV
+                
+                if plugin.is_plugin_applicable(temp_messages, current_provider):
+                    print(f"Plugin {plugin.__name__} triggered.")
+                    # process_messages modifies the messages list in place or returns it?
+                    # The spec says "Modifies the messages accordingly".
+                    # Let's assume it modifies the last message content if needed.
+                    # We should pass a copy or the actual list?
+                    # If we pass temp_messages, we can check if the last message content changed.
+                    
+                    # We need to be careful. If we pass temp_messages and it modifies it, 
+                    # we extract the content from the last message.
+                    
+                    # we extract the content from the last message.
+                    
+                    updated_messages = plugin.process_messages(temp_messages, current_provider)
+                    if updated_messages:
+                        last_msg = updated_messages[-1]
+                        if last_msg["content"] != user_input:
+                            user_input_to_process = last_msg["content"]
+                            plugin_processed = True
+                            await update.message.reply_text(f"Processed by plugin: {plugin.__name__.split('.')[-1]}")
+                            break # Stop after first plugin triggers?
+            except Exception as e:
+                print(f"Error executing plugin {plugin.__name__}: {e}")
+
+        # If no plugin processed it, user_input_to_process remains user_input
+
         if user_id in MESSAGES_BY_USER:
             MESSAGES_BY_USER[user_id].append(
-                {"role": "user", "content": user_input},
+                {"role": "user", "content": user_input_to_process},
             )
 
         else:  # the user posted his first message
             MESSAGES_BY_USER[user_id] = [
                 {"role": "system", "content": SYSTEM_MSG},
-                {"role": "user", "content": user_input},
+                {"role": "user", "content": user_input_to_process},
             ]
 
         # answer = ask_gpt_single_message(user_input, SYSTEM_MSG, max_length=500)
@@ -245,12 +415,49 @@ async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYP
                 content_parts.append({"type": "text", "text": update.message.caption.strip()})
             content_parts.append(image_content)
 
+            user_input = update.message.caption or ""
+            
+            # Provider update logic
+            switch7, report = update_provider_from_user_input(user_input)
+            if switch7:
+                await update.message.reply_text(report)
+            
+            # Strip indicator
+            for provider, indicators in PROVIDER_INDICATORS.items():
+                for indicator in indicators:
+                    if user_input.lower().startswith(indicator):
+                        user_input = user_input[len(indicator) :].strip()
+
+            # Temp messages for plugins
+            temp_messages = []
             if user_id in MESSAGES_BY_USER:
-                MESSAGES_BY_USER[user_id].append({"role": "user", "content": content_parts})
+                temp_messages = MESSAGES_BY_USER[user_id].copy()
+            
+            temp_messages.append({"role": "user", "content": content_parts})
+            
+            plugin_processed = False
+            current_provider = SELECTED_PROVIDER if SELECTED_PROVIDER else PROVIDER_FROM_ENV
+            final_messages = temp_messages # Default
+            
+            for plugin in PLUGINS:
+                try:
+                    if plugin.is_plugin_applicable(temp_messages, current_provider):
+                        print(f"Plugin {plugin.__name__} triggered.")
+                        updated_messages = plugin.process_messages(temp_messages, current_provider)
+                        if updated_messages:
+                            final_messages = updated_messages
+                            plugin_processed = True
+                            await update.message.reply_text(f"Processed by plugin: {plugin.__name__.split('.')[-1]}")
+                            break 
+                except Exception as e:
+                    print(f"Error executing plugin {plugin.__name__}: {e}")
+
+            if user_id in MESSAGES_BY_USER:
+                MESSAGES_BY_USER[user_id].append(final_messages[-1])
             else:
                 MESSAGES_BY_USER[user_id] = [
                     {"role": "system", "content": SYSTEM_MSG},
-                    {"role": "user", "content": content_parts},
+                    final_messages[-1],
                 ]
 
             answer = ask_gpt_multi_message(
@@ -363,6 +570,193 @@ async def handle_image_document_message(update: Update, context: ContextTypes.DE
         await update.message.reply_text(answer)
 
 
+async def handle_video_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    print("In the handle_video_message function...")
+    user_id = update.effective_user.id
+
+    if user_id in ALLOWED_USER_IDS:
+        try:
+            video = update.message.video
+            if not video:
+                return
+            
+            print(f"DEBUG(video): file_id={video.file_id}, mime={video.mime_type}, size={video.file_size}")
+            
+            video_content = {
+                "type": "video", 
+                "file_id": video.file_id,
+                "mime_type": video.mime_type,
+                "file_size": video.file_size,
+                "file_name": getattr(video, "file_name", "video.mp4")
+            }
+            
+            content_parts = []
+            if isinstance(update.message.caption, str) and len(update.message.caption.strip()) > 0:
+                content_parts.append({"type": "text", "text": update.message.caption.strip()})
+            content_parts.append(video_content)
+            
+            user_input = update.message.caption or ""
+            
+            # Provider update logic
+            switch7, report = update_provider_from_user_input(user_input)
+            if switch7:
+                await update.message.reply_text(report)
+            
+            # Strip indicator
+            for provider, indicators in PROVIDER_INDICATORS.items():
+                for indicator in indicators:
+                    if user_input.lower().startswith(indicator):
+                        user_input = user_input[len(indicator) :].strip()
+
+            # Temp messages for plugins
+            temp_messages = []
+            if user_id in MESSAGES_BY_USER:
+                temp_messages = MESSAGES_BY_USER[user_id].copy()
+            
+            temp_messages.append({"role": "user", "content": content_parts})
+            
+            plugin_processed = False
+            current_provider = SELECTED_PROVIDER if SELECTED_PROVIDER else PROVIDER_FROM_ENV
+            final_messages = temp_messages # Default
+            
+            for plugin in PLUGINS:
+                try:
+                    if plugin.is_plugin_applicable(temp_messages, current_provider):
+                        print(f"Plugin {plugin.__name__} triggered.")
+                        updated_messages = plugin.process_messages(temp_messages, current_provider)
+                        if updated_messages:
+                            final_messages = updated_messages
+                            plugin_processed = True
+                            await update.message.reply_text(f"Processed by plugin: {plugin.__name__.split('.')[-1]}")
+                            break 
+                except Exception as e:
+                    print(f"Error executing plugin {plugin.__name__}: {e}")
+            
+            if user_id in MESSAGES_BY_USER:
+                MESSAGES_BY_USER[user_id].append(final_messages[-1])
+            else:
+                MESSAGES_BY_USER[user_id] = [
+                    {"role": "system", "content": SYSTEM_MSG},
+                    final_messages[-1],
+                ]
+
+            answer = ask_gpt_multi_message(
+                MESSAGES_BY_USER[user_id],
+                max_length=500,
+                user_defined_provider=SELECTED_PROVIDER,
+            )
+
+            MESSAGES_BY_USER[user_id].append({"role": "assistant", "content": answer})
+            if len(MESSAGES_BY_USER[user_id]) > MAX_MESSAGES_NUM:
+                MESSAGES_BY_USER[user_id] = MESSAGES_BY_USER[user_id][-MAX_MESSAGES_NUM:]
+                MESSAGES_BY_USER[user_id].insert(0, {"role": "system", "content": SYSTEM_MSG})
+
+            await update.message.reply_text(answer)
+
+        except Exception as e:
+            print(f"Error handling video: {e}")
+            await update.message.reply_text("Sorry, failed to process the video.")
+    else:
+        answer = f"Eh? Du hast doch keine Berechtigung. Deine user_id ist {user_id}."
+        print(answer)
+        await update.message.reply_text(answer)
+
+
+async def handle_audio_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    print("In the handle_audio_message function...")
+    user_id = update.effective_user.id
+
+    if user_id in ALLOWED_USER_IDS:
+        try:
+            audio = update.message.audio or update.message.voice
+            if not audio:
+                return
+            
+            # Determine type
+            msg_type = "audio" if update.message.audio else "voice"
+            
+            print(f"DEBUG({msg_type}): file_id={audio.file_id}, mime={audio.mime_type}, size={audio.file_size}")
+            
+            audio_content = {
+                "type": msg_type, 
+                "file_id": audio.file_id,
+                "mime_type": audio.mime_type,
+                "file_size": audio.file_size,
+                "file_name": getattr(audio, "file_name", "audio.mp3")
+            }
+            
+            content_parts = []
+            if isinstance(update.message.caption, str) and len(update.message.caption.strip()) > 0:
+                content_parts.append({"type": "text", "text": update.message.caption.strip()})
+            content_parts.append(audio_content)
+            
+            user_input = update.message.caption or ""
+            
+            # Provider update logic
+            switch7, report = update_provider_from_user_input(user_input)
+            if switch7:
+                await update.message.reply_text(report)
+            
+            # Strip indicator
+            for provider, indicators in PROVIDER_INDICATORS.items():
+                for indicator in indicators:
+                    if user_input.lower().startswith(indicator):
+                        user_input = user_input[len(indicator) :].strip()
+
+            # Temp messages for plugins
+            temp_messages = []
+            if user_id in MESSAGES_BY_USER:
+                temp_messages = MESSAGES_BY_USER[user_id].copy()
+            
+            temp_messages.append({"role": "user", "content": content_parts})
+            
+            plugin_processed = False
+            current_provider = SELECTED_PROVIDER if SELECTED_PROVIDER else PROVIDER_FROM_ENV
+            final_messages = temp_messages # Default
+            
+            for plugin in PLUGINS:
+                try:
+                    if plugin.is_plugin_applicable(temp_messages, current_provider):
+                        print(f"Plugin {plugin.__name__} triggered.")
+                        updated_messages = plugin.process_messages(temp_messages, current_provider)
+                        if updated_messages:
+                            final_messages = updated_messages
+                            plugin_processed = True
+                            await update.message.reply_text(f"Processed by plugin: {plugin.__name__.split('.')[-1]}")
+                            break 
+                except Exception as e:
+                    print(f"Error executing plugin {plugin.__name__}: {e}")
+            
+            if user_id in MESSAGES_BY_USER:
+                MESSAGES_BY_USER[user_id].append(final_messages[-1])
+            else:
+                MESSAGES_BY_USER[user_id] = [
+                    {"role": "system", "content": SYSTEM_MSG},
+                    final_messages[-1],
+                ]
+
+            answer = ask_gpt_multi_message(
+                MESSAGES_BY_USER[user_id],
+                max_length=500,
+                user_defined_provider=SELECTED_PROVIDER,
+            )
+
+            MESSAGES_BY_USER[user_id].append({"role": "assistant", "content": answer})
+            if len(MESSAGES_BY_USER[user_id]) > MAX_MESSAGES_NUM:
+                MESSAGES_BY_USER[user_id] = MESSAGES_BY_USER[user_id][-MAX_MESSAGES_NUM:]
+                MESSAGES_BY_USER[user_id].insert(0, {"role": "system", "content": SYSTEM_MSG})
+
+            await update.message.reply_text(answer)
+
+        except Exception as e:
+            print(f"Error handling audio: {e}")
+            await update.message.reply_text("Sorry, failed to process the audio.")
+    else:
+        answer = f"Eh? Du hast doch keine Berechtigung. Deine user_id ist {user_id}."
+        print(answer)
+        await update.message.reply_text(answer)
+
+
 async def restrict(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = f"Keine Berechtigung für user_id {user_id}."
@@ -384,8 +778,15 @@ def main():
     app.add_handler(restrict_handler)
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("plugins", plugins_status))
+    app.add_handler(CommandHandler("enable_plugin", enable_plugin_cmd))
+    app.add_handler(CommandHandler("disable_plugin", disable_plugin_cmd))
+    app.add_handler(CommandHandler("enable_all_plugins", enable_all_plugins_cmd))
+    app.add_handler(CommandHandler("disable_all_plugins", disable_all_plugins_cmd))
     app.add_handler(CallbackQueryHandler(start_game_callback, pattern="^start_game$"))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo_message))
+    app.add_handler(MessageHandler(filters.VIDEO, handle_video_message))
+    app.add_handler(MessageHandler(filters.AUDIO | filters.VOICE, handle_audio_message))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_image_document_message))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.run_polling()
